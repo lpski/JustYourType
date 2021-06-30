@@ -1,5 +1,8 @@
-model/data
+cnn/data
 
 # misc
 .DS_Store
 .env*
+*.code-workspace
+*.pyc
+__pycache__/
