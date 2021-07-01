@@ -1,4 +1,6 @@
 cnn/data
+cnn/checkpoints
+cnn/train_images
 
 # misc
 .DS_Store

@@ -1,3 +1,4 @@
+import sys
 import numpy as np, pandas as pd, os, shutil
 from typing import Dict, List, Optional, Set, Tuple
 from imageio import imread
@@ -42,10 +43,18 @@ def clean_folder():
             shutil.copyfile(f'{from_folder}/{char_file}', f'{to_folder}/{char_file}')
             
 
-def analyze_fonts(start: int, count: int):
-    fonts = get_available_fonts()[start:start+count]
+def analyze_fonts(start: int, end: Optional[int] = None):
+    fonts = get_available_fonts()
+    if end is None: end = len(fonts)
+    fonts = fonts[start:end]
     target_w, target_h = 64, 64
+    chars = get_characters()
 
+    label_df = pd.read_csv(f'data/primary/labels/labels.csv', index_col='font')
+    char_encodings = { char: i for i, char in enumerate(get_characters()) }
+
+    char_to_X: Dict[str, list] = { c: [] for c in chars }
+    char_to_y: Dict[str, list] = { c: [] for c in chars }
     for i, font in enumerate(fonts):
         if i % 50 == 0: print(f'{i}/{len(fonts)} Complete')
 
@@ -83,7 +92,16 @@ def analyze_fonts(start: int, count: int):
         except Exception as e: 
             add_font_to_ignored(font)
             continue
-        data = []
+
+        # Get one hot encoding for font + char label
+        try:
+            tags = np.array(label_df.loc[font]['labels'].split(','))
+        except Exception as e:
+            print(f'error getting tags for {font}:', label_df.loc[font]['labels'])
+            print(font in label_df.index.values)
+            sys.exit(0)
+            # break
+        font_label = one_hot_tags(tags)
 
         for lx, hx, y, img, c in imgs:
             try:
@@ -107,17 +125,40 @@ def analyze_fonts(start: int, count: int):
                 if not os.path.exists(folder): os.mkdir(folder)
                 img_sq.save(f'{folder}/{font}_{c}.png')
 
+                # Save numpy array conversion of image
+                im_data = np.array(img_sq)
+                char_to_X[c].append(im_data)
+                label = np.array(font_label + [char_encodings[c]])
+                char_to_y[c].append(label)
+
 
                 # Convert to numpy array
-                matrix = np.array(img_sq.getdata()).reshape((target_h, target_w))
-                matrix = 255 - matrix
-                data.append(matrix)
+                # matrix = np.array(img_sq.getdata()).reshape((target_h, target_w))
+                # matrix = 255 - matrix
+                # data.append(matrix)
                 # print(matrix[32])
 
             except Exception as e:
                 print(f'Error post-processing {font}:{c} | {e}')
                 add_font_to_ignored(font)
                 break
+    
+        
+        if i % 250 == 0: # Periodically save numpy array
+            for c in chars:
+                with open(f'data/primary/encoded/X_{c}.npy', 'wb') as f:
+                    np.save(f, np.array(char_to_X[c]))
+
+                with open(f'data/primary/encoded/y_{c}.npy', 'wb') as f:
+                    np.save(f, np.array(char_to_y[c]))
+
+
+    for c in chars:
+        with open(f'data/primary/encoded/X_{c}.npy', 'wb') as f:
+            np.save(f, np.array(char_to_X[c]))
+
+        with open(f'data/primary/encoded/y_{c}.npy', 'wb') as f:
+            np.save(f, np.array(char_to_y[c]))
 
 
 
@@ -149,6 +190,7 @@ def remove_symbol_fonts():
     ignored.to_csv('data/primary/fonts/ignore.csv', index=False)
 
 
+# Label Analysis
 def clean_tags():
     labels: Set[str] = set()
     # label_df = pd.read_csv(f'data/primary/labels/labels.csv', index_col='font')
@@ -167,15 +209,48 @@ def clean_tags():
     # with open(f'data/primary/labels/all_labels', 'w') as f:
     #     f.write(' '.join(labels))
 
+def tag_cardinality():
+    # label_file = open(f'data/primary/labels/all_labels')
+    # all_labels = [l for l in label_file.read().strip().rstrip().split(' ')]
+    # label_index = { label: i for i, label in enumerate(all_labels) }
+
+    label_df = pd.read_csv(f'data/primary/labels/labels.csv', index_col='font')
+    ignore_labels = set(open('data/primary/labels/ignore_labels').read().split(','))
+
+    counts: Dict[str, int] = {}
+    for font in get_available_fonts():
+        # font_labels = np.array(label_df.loc[font]['labels'].split(','))
+        label_file = open(f'data/primary/font-labels/{font}')
+        font_labels = label_file.read().strip().rstrip().split(' ')
+        font_labels = [l for l in font_labels if l not in ignore_labels and len(l) > 0]
+        if len(font_labels) == 0:
+            add_font_to_ignored(font)
+        else:
+            label_df.loc[font] = ','.join(font_labels)
+            for label in font_labels:
+                counts[label] = counts.get(label, 0) + 1
+
+    sorted_labels = sorted(counts.items(), key=lambda x: x[1])
+    label_df.to_csv('data/primary/labels/labels.csv')
+
+    print(f'{len(counts)} Unique Fonts')
+    print('\n10 Most Common Labels:')
+    for label, count in sorted_labels[-10:]:
+        print(f'{label}: {count}')
+
+    print('\n10 Least Common Labels:')
+    for label, count in sorted_labels[:10]:
+        print(f'{label}: {count}')
+
 
 
 
 # Data Structuring
-
 def one_hot_tags(labels: np.ndarray) -> List[int]:
+    """Returns one hot encoding of provided labels"""
     label_file = open(f'data/primary/labels/all_labels')
     all_labels = [l for l in label_file.read().strip().rstrip().split(' ')]
-    label_index = {label: i for i, label in enumerate(all_labels)}
+    label_index = { label: i for i, label in enumerate(all_labels) }
 
     y = [0] * len(label_index)
     for l in labels: y[label_index[l]] = 1
@@ -200,6 +275,20 @@ def structure_data():
         print(f'{font}:{one_hot_tags(np.array(labels))}')
 
 
+def form_encoded_data():
+    dataset = Dataset()
+    for char in get_characters():
+    # for char in ['AA']:
+        print(f'\n\n\nform_encoded_data: Processing {char}')
+        X, y = dataset.encoded_fonts(char, 5000)
+
+        with open(f'data/primary/encoded/X_{char}.npy', 'wb') as f:
+             np.save(f, X)
+
+        with open(f'data/primary/encoded/y_{char}.npy', 'wb') as f:
+             np.save(f, y)
+
+
 class Dataset():
 
     def all_fonts(self) -> List[str]:
@@ -218,6 +307,7 @@ class Dataset():
         return labels
 
     def encode_labels(self, labels: np.ndarray) -> List[int]:
+        """Returns one hot encoding of provided labels"""
         label_index = {label: i for i, label in enumerate(self.all_labels())}
 
         y = [0] * len(label_index)
@@ -240,9 +330,7 @@ class Dataset():
         im = Image.open(f'data/primary/adj_images/{char}/{font}_{char}.png')
         return np.array(im)
 
-
-
-    def encoded_fonts(self, character: Optional[str] = None) -> Tuple[np.ndarray, np.ndarray]:
+    def encoded_fonts(self, character: Optional[str] = None, count: int = None) -> Tuple[np.ndarray, np.ndarray]:
         """
         Returns encoded representation for each. If a character is provided,
             only returns representations for that character across all fonts
@@ -250,10 +338,11 @@ class Dataset():
 
         # font_encodings = self._font_indices()
         char_encodings = self._encoded_characters()
+        fonts = self.all_fonts()
         
         X, y = [], []
         if character is None:
-            for font in self.all_fonts():
+            for font in fonts:
                 labels = self.font_labels(font)
                 encoded_labels = self.encode_labels(labels)
 
@@ -262,23 +351,36 @@ class Dataset():
                     y.append(np.array(encoded_labels + [char_encodings[char]]))
 
         else:
-            for font in self.all_fonts()[:10]:
-                # Gather X data
-                encoded_char = self._image_for_font_character(font, character)
-                X.append(encoded_char)
+            # Return pre-generated data if exists
+            encoding_path = 'data/primary/encoded'
+            if os.path.exists(f'{encoding_path}/X_{character}.npy') and os.path.exists(f'{encoding_path}/y_{character}.npy'):
+                X = np.load(f'{encoding_path}/X_{character}.npy')
+                y = np.load(f'{encoding_path}/y_{character}.npy')
+                return X, y
 
-                # Gather y data
-                labels = self.font_labels(font)
-                encoded_labels = self.encode_labels(labels)
-                y.append(np.array(encoded_labels + [char_encodings[character]]))
+            else:
+                if count is None: count = len(fonts)
+                for i, font in enumerate(fonts[:count]):
+                    if i % 50 == 0: print(f'encoded_fonts: {i}/{count}')
+                    # Gather X data
+                    encoded_char = self._image_for_font_character(font, character)
+                    X.append(encoded_char)
+
+                    # Gather y data
+                    labels = self.font_labels(font)
+                    encoded_labels = self.encode_labels(labels)
+                    y.append(np.array(encoded_labels + [char_encodings[character]]))
 
         X = np.array(X)
         y = np.array(y)
 
         return X, y
 
+    def formatted_labels(self):
+        encoding_path = 'data/primary/encoded'
+        y: np.ndarray = np.load(f'{encoding_path}/y_AA.npy')
 
-
+        print(y.shape)
 
 
 
@@ -286,12 +388,15 @@ class Dataset():
 if __name__ == '__main__':
     # extract_data()
     # clean_folder()
-    # analyze_fonts(500, 10000)
+    analyze_fonts(0)
     # clean_tags()
     # remove_symbol_fonts()
+    # tag_cardinality() # 1819 fonts + 1 character encoding = 1820 label size
 
     # structure_data()
 
-    dataset = Dataset()
-    dataset.encoded_fonts('a')
-    pass
+    # form_encoded_data()
+
+    # dataset = Dataset()
+    # dataset.encoded_fonts('a')
+    # dataset.formatted_labels()
